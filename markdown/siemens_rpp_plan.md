@@ -118,20 +118,34 @@ CLI accepts `--file <path>` for testing and one-off retries.
 The Node logger contract (from `utils/logger/log.js`) is reproducible bit-identically in Rust — **no Rust-specific log table needed.**
 
 ```
-in-memory: array of
-  { run_id, dt: ISO, type: INFO|WARN|ERROR, func,
-    tag: CALL|DETAILS|CATCH|SEQUENCE HALTED|QA FAILURE,
-    note: <arbitrary JSON object>,
-    err_msg?: <stack or stringified error> }
+run_log = { run_id: uuid_v4, log_events: [] }      ← makeAppRunLog()
 
-end-of-run, one INSERT into util.app_run_logs:
-  ( app_name, run_id,
-    verbose_log    = JSON.stringify(events),
-    warn_error_logs = JSON.stringify(events filtered to WARN+ERROR) )
+each event (addLogEvent), pushed to log_events:
+  { run_id,
+    dt:   new Date().toISOString()  ← UTC, 'Z' suffix (NOT the NY-zoned host_datetime),
+    type: INFO|WARN|ERROR,
+    func: <call-site label>,
+    tag:  CALL|DETAILS|CATCH|SEQUENCE HALTED|QA FAILURE,
+    note: <arbitrary JSON object> }
+  // err_msg is added ONLY when type === ERROR:
+  //   err_msg = err.stack ?? err   (and dev console-logs it)
 
-end-of-run, one file write:
-  /opt/run-logs/${APP_NAME}/${APP_NAME}-log.${LOGGER}.${run_id}.json
+end-of-run, one INSERT into util.app_run_logs (col set util.app_run_logs):
+  ( app_name = APP_NAME, run_id,
+    verbose_log     = JSON.stringify(log_events),
+    warn_error_logs = JSON.stringify(log_events.filter(type ∈ {WARN, ERROR})) )
+
+end-of-run, one file write of JSON.stringify(log_events) to:
+  RUN_ENV=dev      → ./utils/logger/${APP_NAME}-log.${LOGGER}.${run_id}.json
+  staging | prod   → /opt/run-logs/${APP_NAME}/${APP_NAME}-log.${LOGGER}.${run_id}.json
 ```
+
+Source-verified against `utils/logger/log.js` (`makeAppRunLog`, `addLogEvent`,
+`dbInsertLogEvents`, `writeLogEvents`) and `utils/logger/enums.js`. Three details
+the earlier draft glossed: (1) `dt` is **UTC** (`toISOString()`), distinct from the
+NY-zoned `host_datetime`/`capture_datetime` — confirm `Z`-vs-`+00:00` shape in the
+Phase 0 parity check; (2) `err_msg` is present **only** on ERROR events; (3) the dev
+file path differs from staging/prod. The in-memory array key is `log_events`.
 
 A shared crate `rpp_log` will encapsulate this and be reused by every future Rust app in the fleet. Event types and tags stay as the existing uppercase strings (`INFO`/`WARN`/`ERROR`, `CALL`/`DETAILS`/`CATCH`/...) so existing dashboards keep working. `note` is `serde_json::Value` so the JSON shape matches Node's `JSON.stringify(note)` semantics. A `tracing` Layer is exposed on top of this for dev ergonomics; the buffered events sent to PG remain the source of truth.
 
@@ -181,7 +195,7 @@ Numbered for handoff — each blocks scaffolding in some way.
 | Concern | Crate | Notes |
 |---|---|---|
 | async runtime | `tokio` (`rt-multi-thread`) | only because PG/Redis crates are async; the parse inner loop stays sync |
-| PG client | `tokio-postgres` + `deadpool-postgres` pool | `sqlx` compile-time check would require a live DB in CI; `tokio-postgres` more pragmatic here |
+| PG client | `tokio-postgres` + `deadpool-postgres` pool + a TLS connector (`postgres-native-tls` **or** `tokio-postgres-rustls`) | `sqlx` compile-time check would require a live DB in CI; `tokio-postgres` more pragmatic here. **The server requires SSL** (`PG_SSLMODE=require` + CA cert) — `NoTls` will fail; see TD-020 |
 | PG bulk insert | `tokio-postgres` multi-row INSERT via `unnest` for v1; consider binary `COPY` later | UNNEST is easier to evolve to ON CONFLICT |
 | Redis | `redis` (with `tokio-comp`) | matches existing simple connection contract |
 | Regex | `regex` | `(?P<name>...)` syntax — port from Node's `(?<name>...)` |

@@ -182,6 +182,30 @@ reviewer (swapped from the source scaffolding template).
 
 ---
 
+## TD-020 — Postgres connection requires TLS
+
+**Decision:** The PG client must connect over TLS, loading the CA certificate. Use
+`tokio-postgres` with a TLS connector — `postgres-native-tls` (native-tls/OpenSSL)
+or `tokio-postgres-rustls` — wired into the `deadpool-postgres` pool. Plain `NoTls`
+will **not** work against this server.
+
+**Source evidence:** the live dev connection (from the Node `hhm_rpp_siemens` `.env`)
+sets `PG_SSLMODE=require` and `PG_SSL_PATH=./hhm_rpp_siemens/pg_ssl.crt`; the sibling
+`data_acquisition` ships `db/BaltimoreCyberTrustRoot.crt.pem` and `pg_ssl.crt`. So
+the server enforces SSL and the client presents/verifies against a CA cert.
+
+**Config:** expose `PG_SSLMODE` and `PG_SSL_PATH` (CA cert path) as config; the cert
+file is mounted/copied into the image, never embedded in source. The exact
+verify-full vs verify-ca vs require posture (hostname verification) should match what
+the Node `pg`/`pg-promise` client does — confirm during Phase 0 when the pool is
+built, and pin it here then.
+
+**Reason:** Connectivity correctness; this was missing from the original crate-stack
+row (which listed only `tokio-postgres` + `deadpool-postgres`). Folded into the plan's
+crate stack.
+
+---
+
 ## TD-015 — File path shape (resolves Open Decision #1)
 
 **Decision:** `{root}/{system_id}/{file_name}`, where `root = DATA_STORE_DEV`.

@@ -35,13 +35,21 @@ impl RunLogSink for PgRunLogSink<'_> {
 
     async fn insert_app_run_log(&self, row: &AppRunLogRow) -> Result<(), Self::Error> {
         let client = crate::pool::get_client(self.pool, self.statement_timeout_ms).await?;
-        // verbose_log / warn_error_logs are JSON text; the columns are json/jsonb
-        // in PG, so cast the text params. Fully parameterized — no interpolation.
+        // Live schema (verified against pg_db util.app_run_logs):
+        //   app_name text, run_id uuid, verbose_log json, warn_error_logs json.
+        //
+        // We send every param as a Rust String. The casts are written `$N::text::T`
+        // (NOT `$N::T`): a bare `$2::uuid` makes Postgres infer the parameter's type
+        // as `uuid`, and tokio-postgres cannot serialize a String to the uuid wire
+        // type (it only maps to `text`) — that produced "error serializing parameter".
+        // `::text::uuid` pins the param's inferred type to `text` (which String does
+        // serialize to), then casts text->uuid / text->json inside SQL. This keeps
+        // the Node "send strings, let PG coerce" behavior. Fully parameterized.
         client
             .execute(
                 "INSERT INTO util.app_run_logs \
                    (app_name, run_id, verbose_log, warn_error_logs) \
-                 VALUES ($1, $2, $3::json, $4::json)",
+                 VALUES ($1, $2::text::uuid, $3::text::json, $4::text::json)",
                 &[
                     &row.app_name,
                     &row.run_id,

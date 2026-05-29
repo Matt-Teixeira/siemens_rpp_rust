@@ -1,0 +1,9 @@
+# Keep the build context small and the image clean.
+target/
+.git/
+.env
+.env.*
+!.env.example
+*.log
+markdown/
+notes/

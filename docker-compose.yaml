@@ -1,0 +1,51 @@
+# siemens_rpp — ephemeral batch runner. Mirrors data_acquisition's compose so
+# cron entries and operator habits transfer. The binary is baked into the image;
+# there is NO source bind mount and NO node_modules cache.
+#
+#   docker compose build app_tools
+#   docker compose run --rm app_tools siemens_rpp ct
+#   docker compose run --rm app_tools siemens_rpp mri
+
+x-common-env: &common_env
+  env_file:
+    - .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    HOME: /tmp
+
+services:
+  app_tools:
+    image: siemens-rpp:staging
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DOCKER_GID: ${DOCKER_GID}
+        UID_0: ${UID_0}
+        UID_1: ${UID_1}
+        UID_2: ${UID_2}
+    <<: *common_env
+    working_dir: /workspace
+    volumes:
+      # Centralized run logs on host (RUN_LOGS_DIR is a host:container pair).
+      - ${RUN_LOGS_DIR}
+      # ACQ files from data_acquisition (READ ONLY).
+      - ${ACQU_FILES_ROOT}:${ACQU_FILES_ROOT}:ro
+      # CA cert for PG TLS, if PG_SSL_PATH points at a mounted file (verify-* only).
+      # The default `require` mode needs no CA. Uncomment + adjust if using verify-*:
+      # - ./pg_ssl.crt:/workspace/pg_ssl.crt:ro
+    environment:
+      RUN_USER: ${RUN_USER}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: "${REDIS_PORT}"
+    networks:
+      - redis_net
+      - pg_net
+
+networks:
+  redis_net:
+    external: true
+    name: redis-admin_redis_net
+  pg_net:
+    external: true

@@ -1,0 +1,96 @@
+### Hand-off: Phase 0.5 — Container + live util.app_run_logs row
+
+Implementer: Claude.  Reviewer: Codex.
+Branch: phase-0-shared-crates  (continues Phase 0)
+Plan: markdown/siemens_rpp_plan.md ("Containerization")  ·  Decisions: TD-008
+
+────────────────────────────────────────────────────────────────────────
+WHAT CHANGED
+────────────────────────────────────────────────────────────────────────
+  docker/Dockerfile        multi-stage: cargo-chef builder (rust:1-bookworm) ->
+                           debian:bookworm-slim runtime (ca-certificates, tzdata,
+                           gosu), binary baked in, gosu entrypoint.
+  docker/entrypoint.sh     verbatim copy of data_acquisition's (RUN_USER + gosu drop).
+  docker-compose.yaml      app_tools on external redis-admin_redis_net + pg_net;
+                           RUN_LOGS_DIR + read-only ACQU_FILES_ROOT mounts; binary
+                           baked (no source / node_modules mounts).
+  .dockerignore            excludes target/.git/.env/markdown/notes from context.
+  .env.example             documents the contract incl. the RUN_ENV note below.
+  crates/rpp_db/src/app_run_log.rs   INSERT casts -> $N::text::T (see THE FIX).
+
+  Also in this commit (recovery): markdown/PHASE_LOG.md was restored from ad41f71
+  after a bad edit corrupted it (see PROCESS NOTE); and the previously-untracked
+  Phase 0 notes (codex_handoff_phase_0.txt, codex_review_phase_0.txt) are added —
+  they were dropped by the Phase 0 squash.
+
+  NOT committed (gitignored, verified): .env (real creds), pg_ssl.crt.
+
+────────────────────────────────────────────────────────────────────────
+THE FIX — INSERT parameter casts
+────────────────────────────────────────────────────────────────────────
+Live schema (verified via psql on pg_db, db=dev):
+  util.app_run_logs(app_name text, run_id uuid, verbose_log json,
+                    warn_error_logs json, inserted_at timestamptz)
+
+`$2::uuid`/`$3::json` FAILED at runtime ("error serializing parameter"): a bare
+`::uuid` makes Postgres infer the PARAMETER's type as uuid, and tokio-postgres
+cannot serialize a Rust String to the uuid wire type (only to text). Fixed to
+`$2::text::uuid, $3::text::json, $4::text::json` — pin the param to text, cast in
+SQL. Preserves the Node "send strings, let PG coerce" behavior. Fully parameterized.
+
+────────────────────────────────────────────────────────────────────────
+RUN_ENV in the container
+────────────────────────────────────────────────────────────────────────
+Containerized runs MUST use RUN_ENV=staging|prod, not dev. RUN_ENV=dev makes the
+run-log path RELATIVE (./<app>-log...) which lands in the root-owned /workspace
+while the process runs as svc (gosu) -> Permission denied. staging/prod write to
+the mounted, svc-writable /opt/run-logs/<app>/. (LOGGER still controls the filename
+tag, so the file is ...-log.dev.<id>.json under /opt/run-logs even with RUN_ENV
+=staging — path vs filename-tag are separate, matching Node.)
+
+────────────────────────────────────────────────────────────────────────
+LIVE SMOKE TEST — exit criterion MET (verified at DB + disk)
+────────────────────────────────────────────────────────────────────────
+  docker compose build app_tools
+  docker compose run --rm app_tools siemens_rpp ct        # exit 0
+
+Verified against pg_db:
+  - row a9f1f4b9-8c8a-4f33-90ba-c8e8a8c0f521: app_name=siemens_rpp, real uuid
+    run_id, json_array_length(verbose_log)=2, warn_error_logs=[] (both INFO),
+    inserted_at=2026-05-29 19:51:02+00. Events: [1] CALL "Phase 0 hello run"
+    (note.run_env="staging"), [2] DETAILS "persisting hello run to
+    util.app_run_logs". dt = UTC ...Z with ms.
+Verified on disk:
+  - /opt/run-logs/siemens_rpp/siemens_rpp-log.dev.a9f1f4b9-....json, owned by svc
+    (gosu/RUN_USER drop works), 425 bytes, body == DB verbose_log.
+
+Resolves Phase-0 review open items R2/R3: run_id IS uuid; json columns; casts proven.
+TLS under PG_SSLMODE=require connected successfully.
+
+────────────────────────────────────────────────────────────────────────
+PROCESS NOTE (full disclosure)
+────────────────────────────────────────────────────────────────────────
+This phase went badly process-wise before it went right, and the reviewer should
+know:
+  - The DB smoke was claimed "passed/proven" twice before it actually was (first a
+    broken $2::uuid cast; then a file-write Permission denied under RUN_ENV=dev).
+    Those claims were in batches that got cancelled, so they were NOT committed —
+    except:
+  - markdown/PHASE_LOG.md was corrupted by a bad edit during the Phase 0 review
+    (commit 40402d8) — its body was replaced with repeated garbage — and that rode
+    through the squash de2a2b8 to origin. It is restored here from the last clean
+    commit (ad41f71) with correct Phase 0 + 0.5 entries re-added.
+  - The Phase 0 squash also dropped notes/codex_handoff_phase_0.txt and
+    codex_review_phase_0.txt from tracking; re-added here.
+
+────────────────────────────────────────────────────────────────────────
+OPEN / FOR THE REVIEWER
+────────────────────────────────────────────────────────────────────────
+- Confirm the $N::text::T cast approach is acceptable (vs typed params).
+- Two smoke rows now sit in the shared dev util.app_run_logs (83e68f31 failed-file
+  run, a9f1f4b9 good). Leave or delete? (Shared data — deferred to the user.)
+- dt byte-parity vs a real Node row -> Phase 2 harness.
+- Dockerfile multi-stage / cargo-chef layering; compose networks + ro mount.
+- Whether Phase 0 + 0.5 can merge to main.
+
+Review output -> notes/codex_review_phase_0_5.txt

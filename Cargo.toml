@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rpp_log",
+    "crates/rpp_db",
+    "crates/rpp_redis",
+    "crates/siemens_rpp",
+]
+
+# Shared dependency versions for the whole workspace. Member crates pull these in
+# with `dep.workspace = true` so versions stay in lockstep across the fleet crates.
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# async runtime — only because the PG/Redis clients are async; the parse loop is sync
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal"] }
+
+# Postgres: pooled tokio-postgres + TLS (server requires SSL; see TD-020)
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = "0.14"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+
+# Redis: simple host+port connection (no auth/TLS), matches the Node contract
+redis = { version = "0.27", features = ["tokio-comp"] }
+
+# parsing / data
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# binary plumbing
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# errors / logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

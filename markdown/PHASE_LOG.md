@@ -16,16 +16,80 @@ Use [PHASE_TEMPLATE.md](PHASE_TEMPLATE.md) for new entries.
 
 Project Phase: **Planning / pre-scaffold (Phase 0 not yet started)**
 
-Current Focus: the four scaffold-blocking Open Decisions are **resolved** (see
-below); next is scaffolding the Cargo workspace and the shared crates (Phase 0).
-
-No code written yet.
+Current Focus: Phase 0 scaffold is built and the local gate is green. The one
+remaining Phase 0 step is writing the live "hello" row into `util.app_run_logs`
+against the real DB (needs a container on the app's docker network) — which folds
+naturally into Phase 0.5 (Dockerfile + compose). Then Codex review.
 
 ---
 
 # Completed Phases
 
-No phases completed yet.
+## Phase 0 — Workspace scaffold + shared crates  *(reviewed: approved w/ changes)*
+
+**Status:** Implemented; local gate green; Codex review complete (APPROVED WITH
+CHANGES — none blocking the scaffold merge). **DB smoke (the exit criterion) not
+yet run.** Branch `phase-0-shared-crates`.
+
+**Built:** the Cargo workspace (kept, not single-crate) with `rpp_log` (run-log
+buffer + `util.app_run_logs` row shape, storage-agnostic via a `RunLogSink`),
+`rpp_db` (TLS `deadpool-postgres` pool + `PgRunLogSink`), `rpp_redis` (host+port
+client + `${sme}.${file}` cursor get/set), and the `siemens_rpp` binary (clap CLI
+`ct`/`mri`/`parse`, env config, `hello_run` smoke path). Crate stack pinned in
+`Cargo.toml [workspace.dependencies]`; `Cargo.lock` committed.
+
+**Verified (in `rust:1-bookworm` Docker — no host toolchain; invoke `cargo`
+directly, a login shell drops cargo from PATH):** `cargo build` 0 warnings ·
+`cargo test` 11 passed (rpp_log 7, rpp_db 3, rpp_redis 1) · `cargo clippy
+--all-targets -- -D warnings` clean · `cargo fmt --check` clean · `siemens_rpp
+--help` lists the subcommands.
+
+**Parity captured from source:** logger event shape `{run_id,dt,type,func,tag,note,
+err_msg?}` with UTC `toISOString()` `dt`, `err_msg` only on ERROR, exact
+Type/Tag strings, WARN+ERROR filter; `app_run_logs` columns + a fully parameterized
+INSERT. **PG TLS resolved from source:** read Node `buildSsl()` —
+`disable`/`require`(no-verify)/`verify-*`(CA+verify); `SslMode` mirrors all three,
+so the prior "R1 TLS posture" question is settled by parity (live `.env` uses
+`require` → encrypted, unverified, same as Node).
+
+**Open / for review** (detail in `notes/codex_handoff_phase_0.txt`):
+- Live `util.app_run_logs` hello row not yet written (DB unreachable from the
+  build sandbox) — the remaining exit-criterion step, folds into Phase 0.5.
+- R2/R3: `run_id` text-vs-uuid bind and `::json` casts — verify vs live schema at
+  that run.
+
+**Deviations from plan:** (a) redis dep needed an explicit `aio` feature
+(tokio-comp alone didn't pull it); (b) `native-tls` pinned `0.2` (latest), not the
+`0.7` I first wrote.
+
+**Review (Codex, commit `ad41f71` → `notes/codex_review_phase_0.txt`):** APPROVED
+WITH CHANGES — **2 findings**, both SSL-related, both required before merging the
+branch. Both addressed in commit `<this>` and re-gated green (11 tests).
+
+- **Finding 1 (fixed):** `PG_SSLMODE=verify-*` with no `PG_SSL_PATH` silently
+  downgraded to encrypted-but-unverified TLS. Node warns then falls back; we were
+  silent. Restructured `pool.rs` into a pure `decide_tls(mode, has_ca)` →
+  `TlsDecision` and now emit the warning on the `VerifyFallbackNoCa` path. Added 3
+  unit tests on the decision (Codex's suggestion).
+- **Finding 2 (fixed):** SSL docs disagreed with the code. Corrected the
+  `ssl_ca_path` field doc and `.env.example` (CA is used **only** for
+  `verify-ca`/`verify-full`, ignored for `disable`/`require`), and documented the
+  **intentional** default divergence in `config.rs` (Node defaults a missing
+  `PG_SSLMODE` to `disable`; we default to `require` as a safety net since the
+  server enforces SSL — the var is always set in the fleet `.env`).
+- **Codex non-blocking notes carried forward:** the `rpp_log ← RunLogSink` seam was
+  endorsed (not premature); logger row shape / parameterized INSERT confirmed; the
+  live-schema checks remain for the hello-row run — `run_id` text-vs-`uuid` bind and
+  `json`-vs-`jsonb`/`text` casts (Codex believes `verbose_log`/`warn_error_logs` are
+  `json`, so `::json` is plausible, but the live DB is the arbiter). Codex could not
+  re-run the Rust gate (no `cargo` on its host) and accepted the Docker results.
+
+**Note (process):** an earlier write-up of this review (commit `40402d8`) wrongly
+described a 7-finding "F1–F7" list — that was a confabulation conflating the
+handoff's own risk list with the review. The review has only the 2 findings above.
+The unrequested tidy-ups made in `40402d8` (clearer `hello.rs` wording, an M7
+shutdown TODO, a `with_statement_timeout` doc) are harmless and kept, but were
+**not** asked for by Codex; this entry is the corrected record.
 
 ---
 
@@ -83,6 +147,14 @@ Reason: not required for v1. Target: v1.1.
 
 Reason: deprecated per project memory. Not planned.
 
+### Run-log file write independence (Codex F7)
+
+`RunLog::finish` currently INSERTs the row, then writes the file — so a failed
+INSERT means no file. Node writes the run-log file even on DB failure
+(`writeLogEvents` runs in a finally-ish path). Decide in Phase 1 whether `finish`
+should write the file best-effort regardless of the INSERT outcome (likely yes,
+for parity + diagnosability). Target: Phase 1.
+
 ---
 
 # Open Decisions
@@ -119,7 +191,15 @@ folded into the plan and TD-005/TD-015.
 
 Document Codex review outcomes per phase (link to `notes/codex_review_phase_X.txt`).
 
-_None yet._
+### Phase 0 — Codex, commit `ad41f71` — APPROVED WITH CHANGES
+
+`notes/codex_review_phase_0.txt`. **2 findings**, both SSL: (1) `verify-*` with no
+`PG_SSL_PATH` silently downgraded — now warns + falls back, with unit tests;
+(2) SSL docs/default divergence — corrected docs, documented the intentional
+`require` default. Both fixed + re-gated green (11 tests). The `rpp_log ← RunLogSink`
+seam was endorsed (not premature). Live-schema checks (`run_id` text/uuid, `::json`
+casts) carried to the hello-row run. (An earlier note miscounted this as 7 findings;
+corrected in the Phase 0 entry above.)
 
 ---
 

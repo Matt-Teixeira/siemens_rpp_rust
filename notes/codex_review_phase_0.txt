@@ -1,0 +1,33 @@
+Codex review: Phase 0 workspace scaffold + shared crates
+Branch: phase-0-shared-crates
+Reviewed: 2026-05-29
+
+Verdict: Approved with Minor Changes
+
+Findings
+
+1. Minor / security-observability: PG_SSLMODE=verify-* with no PG_SSL_PATH silently downgrades to unverified TLS.
+
+   In crates/rpp_db/src/pool.rs:63-92, Verify mode only enters the CA-loading branch when ssl_ca_path is Some(non-empty). If PG_SSLMODE is verify-ca or verify-full and PG_SSL_PATH is unset/empty, the code falls through to the generic require behavior at lines 88-91 without logging. The Node helper warns in this exact case before falling back to require (/home/matt-teixeira/apps/hhm_rpp_siemens/utils/db/pg-pool.js:18-31), and the handoff says the Rust mode mirrors that warning/fallback behavior.
+
+   Why this matters: an operator can explicitly request certificate verification and unknowingly get encrypted-but-unverified TLS. The live .env uses require, so this is not blocking the Phase 0 hello row, but it should be fixed before relying on verify-ca/verify-full.
+
+   Recommended fix: when cfg.ssl_mode == SslMode::Verify and ssl_ca_path is None/empty, emit the same kind of warning used for unreadable files, then fall back to require. A small unit test around the mode decision would be useful if the TLS construction is refactored enough to test without a real cert.
+
+2. Minor / documentation parity: SSL comments disagree with the implemented mode semantics.
+
+   crates/rpp_db/src/pool.rs:37 says PG_SSL_PATH is required when ssl_mode == Require, but the code intentionally ignores the CA in Require mode and only uses it for Verify. .env.example:14-15 likewise documents PG_SSL_PATH as required with PG_SSLMODE=require, while the source-verified Node behavior is require -> rejectUnauthorized:false, no CA verification.
+
+   Recommended fix: update these comments to say PG_SSL_PATH is used only for verify-ca/verify-full. Also consider documenting the intentional Rust default at crates/siemens_rpp/src/config.rs:38: Node buildSsl defaults missing PG_SSLMODE to disable, while Rust defaults it to require. That may be a deliberate production-safety choice, but it is not a bit-for-bit helper default.
+
+Notes / non-blocking checks
+
+- The rpp_log storage boundary looks reasonable, not premature. TD-007 explicitly calls for shared in-workspace fleet crates, and keeping rpp_log free of rpp_db makes tests and later extraction cleaner.
+- Logger row shape and event serialization match the reviewed Node contract: field names, UTC millisecond Z timestamp, uppercase type/tag strings, err_msg only on error, and WARN/ERROR filtering.
+- PgRunLogSink uses a parameterized INSERT; no SQL interpolation concern in the Phase 0 app_run_logs path.
+- The handoff's live-schema risks remain real: confirm run_id text-vs-uuid and json-vs-jsonb/text during the hello-row run. The current casts are plausible, but the live DB is the final arbiter.
+- I could not re-run the Rust gate in this host environment because cargo is not installed here. The handoff's Docker-based build/test/clippy/fmt results are therefore accepted as the current verification record.
+
+Approval status
+
+Approved with Minor Changes. I would not block Phase 0.5 scaffolding on this, but I would ask Claude to fix the silent verify-* fallback warning and the SSL documentation before merging the Phase 0 branch.

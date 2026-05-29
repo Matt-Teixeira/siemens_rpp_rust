@@ -1,0 +1,25 @@
+[package]
+name = "rpp_log"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Shared, fleet-wide run-logging crate. Reproduces the Node `util.app_run_logs`
+# contract (in-memory event buffer -> one end-of-run INSERT + a file write).
+# Persisting the buffer is delegated to a sink (rpp_db provides the PG one) so this
+# crate has no database dependency of its own.
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

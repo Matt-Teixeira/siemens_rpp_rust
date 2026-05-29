@@ -1,0 +1,27 @@
+[package]
+name = "siemens_rpp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The application binary. APP_NAME / image / crate are all `siemens_rpp`; the
+# repository directory is `siemens_rpp_rust` (TD-019).
+
+[[bin]]
+name = "siemens_rpp"
+path = "src/main.rs"
+
+[dependencies]
+rpp_log = { path = "../rpp_log" }
+rpp_db = { path = "../rpp_db" }
+rpp_redis = { path = "../rpp_redis" }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

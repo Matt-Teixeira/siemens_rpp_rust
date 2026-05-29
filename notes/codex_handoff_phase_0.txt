@@ -1,0 +1,126 @@
+### Hand-off: Phase 0 — Workspace scaffold + shared crates
+
+Implementer: Claude.  Reviewer: Codex.
+Branch: phase-0-shared-crates  (off `main`)
+Plan: markdown/siemens_rpp_plan.md  ·  Decisions: markdown/TECHNICAL_DECISIONS.md
+
+────────────────────────────────────────────────────────────────────────
+WHAT CHANGED
+────────────────────────────────────────────────────────────────────────
+Created the Cargo workspace and the three shared crates + the binary, per the
+plan's "Project layout" and "Crate stack" (workspace kept by decision; the
+single-crate idea was NOT taken).
+
+  Cargo.toml                     workspace root; [workspace.dependencies] pins
+  rust-toolchain.toml            stable + rustfmt + clippy
+  .env.example                   documents the env contract (no secrets)
+  crates/rpp_log/                run-log buffer + util.app_run_logs row shape
+    src/lib.rs  enums.rs  event.rs  run_log.rs  sink.rs  tracing_init.rs
+  crates/rpp_db/                 TLS PG pool (deadpool) + PgRunLogSink
+    src/lib.rs  pool.rs  app_run_log.rs
+  crates/rpp_redis/              host+port client + cursor get/set helpers
+    src/lib.rs
+  crates/siemens_rpp/            the binary (clap CLI, config, hello-row main)
+    src/main.rs  cli.rs  config.rs  error.rs  hello.rs
+
+Cargo.lock is committed (binary/app, not a library-only repo).
+
+────────────────────────────────────────────────────────────────────────
+WHY / DESIGN NOTES (for review focus)
+────────────────────────────────────────────────────────────────────────
+1. rpp_log is storage-agnostic. It builds AppRunLogRow {app_name, run_id,
+   verbose_log, warn_error_logs} (exact Node ColumnSet, verified in
+   utils/db/sql/pg-helpers.js) and a file payload; the actual INSERT is done by a
+   RunLogSink implementor. rpp_db provides PgRunLogSink. This keeps rpp_log free
+   of a DB dependency so it can be lifted to a standalone fleet workspace later
+   (TD-007). >>> Review question: is this seam right, or premature for now? <<<
+
+2. Logger contract parity (verified vs utils/logger/log.js + enums.js):
+   - Event = { run_id, dt, type, func, tag, note, err_msg? }.
+   - dt is UTC toISOString() shape: "%Y-%m-%dT%H:%M:%S%.3fZ" (millis + Z).
+     Unit-tested for length 24 / '.' at idx 19 / 'Z' suffix.
+   - err_msg present ONLY on ERROR events (#[serde(skip_serializing_if)]); tested.
+   - Type/Tag serialize to exact uppercase strings incl. "SEQUENCE HALTED" /
+     "QA FAILURE"; tested.
+   - warn_error_logs = events filtered to WARN|ERROR; tested.
+   - run-log file path: dev -> ./<app>-log.<logger>.<run_id>.json;
+     staging/prod -> /opt/run-logs/<app>/...  (config.rs::run_log_path).
+
+3. PG TLS (TD-020) — now matched to SOURCE, not guessed. Read the Node
+   buildSsl() in utils/db/pg-pool.js; it has three modes and the Rust SslMode
+   now mirrors each exactly:
+     - disable               -> NoTls
+     - require               -> encrypt, NO CA, no verification
+                                (rejectUnauthorized:false)  <-- the live .env mode
+     - verify-ca/verify-full -> load CA from PG_SSL_PATH, verify chain
+                                (rejectUnauthorized:true); missing CA file warns
+                                and falls back to require (Node does the same).
+   So the earlier "R1 TLS posture" open question is RESOLVED by parity: under the
+   live PG_SSLMODE=require, the CA is not loaded and certs/hostnames are not
+   verified — identical to Node. (If you want stricter-than-Node security, that's
+   a deliberate divergence to raise, not a parity fix.)
+
+4. app_run_logs INSERT is fully parameterized:
+   INSERT INTO util.app_run_logs (app_name, run_id, verbose_log, warn_error_logs)
+   VALUES ($1, $2, $3::json, $4::json).  No string interpolation (sets the
+   precedent for the TD-010 offline-upsert fix later).
+
+5. Env var names match the live fleet .env: PGHOST/PGPORT/PGUSER/PGPASSWORD/
+   PGDATABASE (libpq-style, NOT PG_*), REDIS_HOST/REDIS_PORT, ACQU_FILES_ROOT
+   (renamed from DATA_STORE_DEV, TD-015), APP_NAME/RUN_ENV/LOGGER. config.rs also
+   reads PG_SSLMODE / PG_SSL_PATH for the modes above.
+
+────────────────────────────────────────────────────────────────────────
+HOW IT WAS TESTED
+────────────────────────────────────────────────────────────────────────
+No host Rust toolchain; built inside the rust:1-bookworm Docker image
+(matches the planned build base) with cached registry + target volumes:
+
+  docker run --rm -v "$PWD":/work -w /work \
+    -v siemens_rpp_cargo_registry:/usr/local/cargo/registry \
+    -v siemens_rpp_target:/work/target rust:1-bookworm \
+    cargo build && cargo test \
+      && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+  (invoke cargo directly, NOT via `bash -lc` — a login shell drops
+   /usr/local/cargo/bin from PATH in this image.)
+
+Results (all green):
+  - cargo build .............. OK, 0 warnings
+  - cargo test ............... OK — 8 tests (rpp_log 7, rpp_redis 1)
+  - cargo clippy -D warnings . OK (clean)
+  - cargo fmt --check ........ OK (clean)
+  - ./target/debug/siemens_rpp --help .... shows ct / mri / parse
+
+NOT YET DONE (Phase 0 exit criterion still open):
+  - The live "hello" row into util.app_run_logs has NOT been written. The DB
+    (pg_db, sslmode=require) is reachable from the app's docker network, not from
+    this build sandbox. hello::hello_run() is implemented and compiles; it needs a
+    run against the real DB (container on redis_net/pg_net with the real .env +
+    pg_ssl.crt) to confirm the row lands. This is the one remaining Phase 0 step,
+    and naturally folds into Phase 0.5 (Dockerfile + compose).
+
+────────────────────────────────────────────────────────────────────────
+ASSUMPTIONS & OPEN RISKS (for the live-DB run)
+────────────────────────────────────────────────────────────────────────
+R2 run_id column type. The INSERT binds run_id as text ($2, no cast). If
+   util.app_run_logs.run_id is a uuid column, this may need $2::uuid (Node/
+   pg-promise sent text and let PG coerce). Verify against the live schema.
+R3 verbose_log / warn_error_logs cast as ::json. If the columns are jsonb or
+   text, adjust the cast.
+R4 dt format "%.3fZ" emits exactly 3 fractional digits + literal Z. Confirm vs
+   real Node rows when the parity harness exists.
+R5 redis_host/redis_port/acqu_files_root are loaded+validated but unused in
+   Phase 0 (marked #[allow(dead_code)]); consumed in Phase 1. Confirm that's an
+   acceptable Phase-0 state vs. wiring a Redis ping now.
+
+────────────────────────────────────────────────────────────────────────
+FOR THE REVIEWER — suggested focus
+────────────────────────────────────────────────────────────────────────
+- rpp_log row/JSON shape vs Node (event.rs, run_log.rs, enums.rs).
+- PgRunLogSink SQL + param binding (app_run_log.rs) — R2/R3.
+- SslMode three-mode mapping vs Node buildSsl() (pool.rs) — confirm parity read.
+- config.rs env mapping vs the live .env.
+- Whether the storage-agnostic sink boundary (rpp_log <- rpp_db) is the right
+  seam for the future shared crate, or over-abstraction for now (design note 1).
+
+Review output → notes/codex_review_phase_0.txt

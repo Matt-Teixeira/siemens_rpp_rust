@@ -1,0 +1,21 @@
+[package]
+name = "rpp_db"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Shared, fleet-wide Postgres access: a deadpool-managed tokio-postgres pool with
+# TLS (the server requires SSL; TD-020) and the `util.app_run_logs` writer that
+# satisfies `rpp_log::RunLogSink`.
+
+[dependencies]
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
+postgres-native-tls = { workspace = true }
+native-tls = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rpp_log = { path = "../rpp_log" }

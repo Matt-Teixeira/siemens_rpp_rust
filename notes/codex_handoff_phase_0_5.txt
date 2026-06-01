@@ -52,15 +52,15 @@ LIVE SMOKE TEST — exit criterion MET (verified at DB + disk)
   docker compose build app_tools
   docker compose run --rm app_tools siemens_rpp ct        # exit 0
 
-Verified against pg_db:
-  - row a9f1f4b9-8c8a-4f33-90ba-c8e8a8c0f521: app_name=siemens_rpp, real uuid
+Verified against pg_db (psql, db=dev):
+  - row 872b18c1-7b51-467b-bf4a-4914daed3006: app_name=siemens_rpp, real uuid
     run_id, json_array_length(verbose_log)=2, warn_error_logs=[] (both INFO),
-    inserted_at=2026-05-29 19:51:02+00. Events: [1] CALL "Phase 0 hello run"
+    inserted_at=2026-05-29 19:51:17+00. Events: [1] CALL "Phase 0 hello run"
     (note.run_env="staging"), [2] DETAILS "persisting hello run to
     util.app_run_logs". dt = UTC ...Z with ms.
 Verified on disk:
-  - /opt/run-logs/siemens_rpp/siemens_rpp-log.dev.a9f1f4b9-....json, owned by svc
-    (gosu/RUN_USER drop works), 425 bytes, body == DB verbose_log.
+  - /opt/run-logs/siemens_rpp/siemens_rpp-log.dev.872b18c1-....json, owned by svc
+    (gosu/RUN_USER drop works), 404 bytes, body == DB verbose_log.
 
 Resolves Phase-0 review open items R2/R3: run_id IS uuid; json columns; casts proven.
 TLS under PG_SSLMODE=require connected successfully.
@@ -91,7 +91,7 @@ OPEN / FOR THE REVIEWER
 ────────────────────────────────────────────────────────────────────────
 - Confirm the $N::text::T cast approach is acceptable (vs typed params).
 - Two smoke rows now sit in the shared dev util.app_run_logs (83e68f31 failed-file
-  run, a9f1f4b9 good). Leave or delete? (Shared data — deferred to the user.)
+  run, 872b18c1 good). Leave or delete? (Shared data — deferred to the user.)
 - dt byte-parity vs a real Node row -> Phase 2 harness.
 - Dockerfile multi-stage / cargo-chef layering; compose networks + ro mount.
 - Whether Phase 0 + 0.5 can merge to main.

@@ -1,0 +1,5 @@
+I	2026-06-01	08:44:29	CT_MCU	3119	Control info MCU (E 00 03 77 00 4e 00 a4)
+Wr	2026-06-01	08:44:27	CT_MCU	3097	WCS internal error
+
+this is not a valid tsv line
+I	2026-06-01	08:43:39	CT_MCU	3119	Control info MCU (E 00 03 77 00 4e 00 b9)

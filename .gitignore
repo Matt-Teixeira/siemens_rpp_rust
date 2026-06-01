@@ -17,3 +17,5 @@
 # Local scratch
 /tmp/
 *.log
+# ...but committed test fixtures (captured/crafted log samples) are intentional:
+!crates/*/tests/fixtures/**

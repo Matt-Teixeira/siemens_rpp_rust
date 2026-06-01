@@ -14,13 +14,14 @@ Use [PHASE_TEMPLATE.md](PHASE_TEMPLATE.md) for new entries.
 
 ## Current Status
 
-Project Phase: **Phase 0 + 0.5 complete; next is Phase 1 (`parse` subcommand).**
+Project Phase: **Phase 1 (`parse` subcommand) implemented & verified; next is
+Phase 2 (datetime parity).**
 
-Current Focus: Phase 0 (workspace + crates) is built, Codex-reviewed (2 SSL
-findings, both fixed), gate green. Phase 0.5 (Dockerfile + compose) is built and
-the live "hello" row was written to `util.app_run_logs` and verified at the DB
-(row `872b18c1-7b51-467b-bf4a-4914daed3006`, 2 events) plus the run-log file on
-disk (owned by `svc`). Awaiting Codex review of Phase 0.5.
+Current Focus: Phases 0 + 0.5 are merged to `main` (Codex-reviewed; 0.5 fixes in
+`c830a4d`). Phase 1 — the `parse` single-system dry-run — is built and verified
+end-to-end against live boot data and a committed CRLF fixture; gate green (26
+tests). Awaiting Codex review of Phase 1, then Phase 2 (the `host_datetime` work
+that fills the currently-null datetime columns).
 
 ---
 
@@ -157,6 +158,56 @@ a live `app_run_logs` row once the June partition exists. Image is local
 
 ---
 
+## Phase 1 — `parse` subcommand (single-system, dry-run)  *(complete; awaiting review)*
+
+The first real parsing work. `siemens_rpp parse --system-id … --modality ct|mri
+--dry-run` runs the live boot query for one system → builds the file path →
+reads+scans the log → prints the mapped rows as a **pure JSON array** on stdout.
+No PG/Redis/gzip writes; `host_datetime`/`capture_datetime` are left `null` (Phase 2).
+
+**New modules** (`crates/siemens_rpp/src/`): `types.rs` (`SystemRow`, `LogConfig`,
+`Row` in exact `siemens_ct_mri` field order), `boot.rs` (CT/MRI boot SQL verbatim
+from `on_boot_queries.js` → `Vec<SystemRow>`, `log_config` json deserialized),
+`path.rs` (`ACQU_FILES_ROOT/<id>/<file_name>`, TD-015), `parse/` (`win10.rs` re_v1/
+re_v2 ported from `parsers.js`; `blank_line.rs` = `/^[ \t\n]*$/`; `mod.rs`
+`scan_lines` with cursor-hit/blank/bad-match), `runner.rs` (orchestration + CRLF
+strip + JSON output). Added a thin `lib.rs` (lib+bin split) so the pure parser is
+integration-testable.
+
+**Source-verified behaviors:** re_v1/re_v2 regex (only `(?<>)`→`(?P<>)`); cursor-hit
+break; **blank → silent skip**, **non-blank no-match → warn-and-skip + count**
+(TD-017 divergence, no crash); uncaptured fields (`domain_group`/`id_group`/`month`/
+`day`/`year`) stay `null` (Node `mapDataToSchema`); CRLF trailing-`\r` strip (TD-016).
+Discovered: the config-processor files (`buildParamQuery` etc.) are **not** on the
+siemens boot path — dead/unrelated; not ported.
+
+**Verified end-to-end:**
+- live `SME21862` (boot query → real `Application.log`, 2187 CRLF lines → 2187 rows,
+  28 distinct `source_group`s, 0 bad matches); first row byte-matches the raw line.
+- empty `SME21863` → `[]`, 0 rows.
+- committed CRLF fixture (`tests/fixtures/sample_ct.log`): 3 valid + 1 blank + 1 bad
+  → 3 rows, blank skipped, bad-match WARN (`count=1`) on **stderr**, exit 0.
+- stdout is **pure JSON** (logs moved to stderr — `tracing_init` now writes stderr,
+  so `--dry-run` output is byte-diffable), valid JSON, zero stray `\r`, field order
+  exactly the `siemens_ct_mri` schema.
+
+Gate green (26 tests, incl. the `parse_fixture` golden integration test). The live
+`Application.log` files **rotate** (turn over ~daily + accumulate), so tests use the
+committed fixture, not live files.
+
+**Open/deferred:** `host_datetime`/`capture_datetime` construction = Phase 2;
+persistence to `log.siemens_*`, the offline upsert, gzip-save, and cursor-write are
+later phases (`parse` errors if run without `--dry-run`). Full Node `--dry-run`
+byte-diff is pending a captured prod-row baseline. Handoff:
+`notes/codex_handoff_phase_1.txt`.
+
+**Infra note:** a docker `--no-cache` rebuild loop filled the 30 GB disk (ENOSPC);
+reclaimed ~9 GB via `docker builder prune`. One casualty — `tracing_init.rs` was
+truncated by the failed write and restored from git. Lesson: don't `--no-cache`
+every rebuild; normal cached builds bust the right layers on a real source change.
+
+---
+
 # Major Architectural Decisions
 
 These are summarized here for quick reference; the authoritative record is
@@ -278,6 +329,8 @@ in-container: rejects dev, and a failed run leaves 0 DB rows). (2) `.env.example
 missing `RUN_LOGS_DIR`/`DOCKER_GID`/`UID_0-2`; documented. Codex approved the
 `$N::text::T` cast. Gate green (14 tests). A live-row re-confirmation is blocked by a
 missing June DB partition (dev-env, fleet-wide; see the Phase 0.5 entry).
+
+### Phase 1 — handoff `notes/codex_handoff_phase_1.txt`; review pending.
 
 ---
 

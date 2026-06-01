@@ -1,0 +1,81 @@
+### Hand-off: Phase 1 — `parse` subcommand (single-system, dry-run)
+
+Implementer: Claude.  Reviewer: Codex.
+Branch: phase-0-shared-crates (continuing) — or a fresh phase-1 branch if you prefer.
+Plan: markdown/siemens_rpp_plan.md (Phase 1)  ·  Decisions: TD-015/016/017
+
+────────────────────────────────────────────────────────────────────────
+WHAT CHANGED
+────────────────────────────────────────────────────────────────────────
+New modules under crates/siemens_rpp/src/:
+  types.rs    SystemRow, LogConfig (boot json), Row (exact siemens_ct_mri field
+              order; serde Serialize).
+  boot.rs     Modality enum; SIEMENS_CT / SIEMENS_MRI boot SQL copied VERBATIM from
+              acquisition/on_boot_queries.js; boot_systems()/boot_one(); log_config
+              json column -> LogConfig.
+  path.rs     log_file_path() = ACQU_FILES_ROOT/<system_id>/<file_name> (TD-015).
+  parse/win10.rs  re_v1 / re_v2 ported from parse/parsers.js (only (?<n>)->(?P<n>));
+              select_regex(parsers[0]); parse_line() -> Matched/Blank/BadMatch.
+  parse/blank_line.rs  is_blank() = /^[ \t\n]*$/ (Node blankLineTest).
+  parse/mod.rs  scan_lines(): first_line capture, cursor-hit break, blank skip,
+              bad-match count.
+  runner.rs   run_parse(): boot_one -> path (or --file) -> read+CRLF-strip ->
+              scan -> JSON array on stdout. Errors if run without --dry-run.
+  lib.rs      NEW: lib+bin split so the pure parser is integration-testable; main.rs
+              is now a thin shim calling siemens_rpp::run().
+  tests/fixtures/sample_ct.log + tests/parse_fixture.rs  golden test.
+Also: crates/rpp_log/src/tracing_init.rs now writes logs to STDERR (so --dry-run
+stdout is pure JSON). Cargo.toml: added regex/serde/tokio-postgres deps to the bin.
+
+────────────────────────────────────────────────────────────────────────
+PARITY NOTES (source-verified)
+────────────────────────────────────────────────────────────────────────
+- Boot path is dead simple (index.js -> on_boot_queries[argv] -> pgPool.any ->
+  per-system). The utils/config-processor/* files (buildParamQuery, etc.) are NOT
+  on the siemens path — unrelated MMB code; deliberately NOT ported.
+- re_v1: <host_state>\t<host_date>\t<host_time>\t<source>\t<type>\t<text>; re_v2
+  swaps host_time/host_state to the front. parsers[0] selects.
+- Line handling matches jobs/win_10/siemens_ct.js: line1 = first_line (new cursor),
+  line==redis_line => break, regex match => row, no-match+blank => skip,
+  no-match+non-blank => "Bad Match" WARN + skip + count (TD-017 divergence; Node
+  would crash here).
+- mapDataToSchema parity: domain_group/id_group/month/day/year never captured by
+  win_10 regex => null. host_datetime/capture_datetime => null in Phase 1 (Phase 2).
+- CRLF (TD-016): files are CRLF on the dev host (verified: 2187/2187 lines). Each
+  line has its trailing \r stripped before compare/parse.
+
+────────────────────────────────────────────────────────────────────────
+HOW IT WAS VERIFIED
+────────────────────────────────────────────────────────────────────────
+Gate (rust:1-bookworm, cargo invoked directly): build / clippy -D warnings / fmt /
+test all green — 26 tests (rpp_db 3, rpp_log 7, rpp_redis 1, siemens_rpp lib 14,
+parse_fixture integration 1).
+
+End-to-end against the live dev DB + files (read-only):
+- SME21862 (real Application.log, 2187 CRLF lines) -> 2187 rows, 0 bad matches, 28
+  distinct source_group values; first row byte-matches the raw line.
+- SME21863 (empty file) -> [] / 0 rows / exit 0.
+- Committed CRLF fixture (3 valid + 1 blank + 1 bad) -> 3 rows; blank skipped;
+  bad-match WARN(count=1) on stderr; exit 0.
+- stdout confirmed PURE JSON (python json.load ok), zero stray \r, field order ==
+  siemens_ct_mri schema.
+
+NOTE: the live Application.log files ROTATE (turn over ~daily and accumulate during
+the day) — by the time I re-checked, SME21862 was 0 bytes again. Tests therefore use
+the committed fixture, not live files. The 2187-row run above was a real snapshot.
+
+────────────────────────────────────────────────────────────────────────
+OPEN / FOR THE REVIEWER
+────────────────────────────────────────────────────────────────────────
+- A full Node-vs-Rust --dry-run byte-diff is NOT yet done (needs a captured Node
+  mappedData baseline for the same file; Node isn't runnable in this env). The row
+  shape/order/values were spot-checked against raw lines + the Node schema. Worth a
+  reviewer eye on whether the re_v1 source_group/type_group capture-group edge cases
+  (the `(.*?(\d+)?)(\.\d\.\d)?` + optional `\t?\s?` bits) match Node on tricky lines.
+- lib+bin split: ok, or do you want the modules kept pub(crate) with the test
+  driven differently?
+- runner.rs reads the whole file into Vec<String> before scanning — fine for these
+  file sizes (~1.4 MB); streaming can come later if needed.
+- Cursor is read-only in dry-run; Redis failure is logged + treated as "no cursor".
+
+Review output -> notes/codex_review_phase_1.txt

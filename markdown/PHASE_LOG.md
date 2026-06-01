@@ -125,13 +125,34 @@ row `872b18c1-7b51-467b-bf4a-4914daed3006`, `app_name='siemens_rpp'`, 2 events i
 `/opt/run-logs/siemens_rpp/siemens_rpp-log.dev.872b18c1-….json`, **owned by `svc`**
 (gosu/`RUN_USER` drop works), body == DB `verbose_log`.
 
-**Two smoke rows now sit in the shared `dev` `util.app_run_logs`:** `83e68f31`
-(19:42 — the run whose INSERT succeeded but whose file write then failed under
-`RUN_ENV=dev`) and `872b18c1` (19:51 — fully successful). Both are harmless hello
-rows in the dev DB; left in place pending a cleanup decision (shared data).
+**Smoke rows cleaned up:** the two earlier hello rows (`83e68f31`, `872b18c1`) were
+DELETEd from the shared dev `util.app_run_logs` at the user's request.
 
-**Open/deferred:** `dt` byte-parity vs a real Node row → Phase 2 harness. Image is
-local `siemens-rpp:staging` (no registry push). Handoff:
+**Codex Phase 0.5 review (`notes/codex_review_phase_0_5.txt`): CHANGES REQUESTED —
+2 Medium findings, both fixed (2026-06-01):**
+- **Finding 1 (RUN_ENV=dev / partial persistence):** (a) compose now sets
+  `APP_CONTAINER=1` and `Config::from_env` rejects `RUN_ENV=dev` in a container
+  before any DB work; (b) `RunLog::finish` writes the run-log file **before** the
+  INSERT, so a bad path can't leave an orphan DB row (also resolves tech-debt F7).
+  Verified in-container: `-e RUN_ENV=dev` → config error, exit 1, no DB row; a
+  failing run still wrote the file with **0** DB rows. +3 unit tests; gate green
+  (14 tests).
+- **Finding 2 (.env.example incompleteness):** documented `RUN_LOGS_DIR`,
+  `DOCKER_GID`, `UID_0/1/2`, and the compose-set `APP_CONTAINER`.
+
+**Known dev-env blocker (NOT an app bug):** `util.app_run_logs` is RANGE-partitioned
+by month on `inserted_at`; the newest partition ends `2026-06-01`, so there is **no
+June partition** and INSERTs currently fail with `no partition of relation
+"app_run_logs" found`. This is fleet-wide — every app, including the Node
+`hhm_rpp_siemens`, last wrote `2026-05-31 23:50`. The May 29 smoke (row+file) already
+proved the path; re-confirmation of a live row is deferred until a June partition
+exists (dev-server housekeeping the user can't do right now). Does not affect
+Phase 1 (the parser writes to `log.siemens_*` and its exit criterion is a
+`--dry-run` diff, no DB writes).
+
+**Open/deferred:** `dt` byte-parity vs a real Node row → Phase 2 harness; re-confirm
+a live `app_run_logs` row once the June partition exists. Image is local
+`siemens-rpp:staging` (no registry push). Handoff:
 `notes/codex_handoff_phase_0_5.txt`. Real `.env` + `pg_ssl.crt` are gitignored.
 
 ---
@@ -190,13 +211,17 @@ Reason: not required for v1. Target: v1.1.
 
 Reason: deprecated per project memory. Not planned.
 
-### Run-log file write independence (Codex F7)
+### Run-log file write independence (Codex F7) — *partially resolved in Phase 0.5 review*
 
-`RunLog::finish` currently INSERTs the row, then writes the file — so a failed
-INSERT means no file. Node writes the run-log file even on DB failure
-(`writeLogEvents` runs in a finally-ish path). Decide in Phase 1 whether `finish`
-should write the file best-effort regardless of the INSERT outcome (likely yes,
-for parity + diagnosability). Target: Phase 1.
+Originally: `RunLog::finish` INSERTed the row then wrote the file, so a failed file
+write left a DB row with no file (the 83e68f31 smoke case). Resolved by **reordering
+`finish` to write the file before the INSERT** (Phase 0.5 review, Codex finding 1):
+a bad/unwritable path now fails before any shared DB mutation.
+
+Still open for Phase 1: the symmetric Node case — write the file even when the **DB
+INSERT** fails (Node `writeLogEvents` runs regardless). With the new order the file
+is already written before the insert, so this is largely covered; decide in Phase 1
+whether to also tolerate a failed insert without erroring the run.
 
 ---
 
@@ -244,7 +269,15 @@ seam was endorsed (not premature). Live-schema checks (`run_id` text/uuid, `::js
 casts) carried to the hello-row run. (An earlier note miscounted this as 7 findings;
 corrected in the Phase 0 entry above.)
 
-### Phase 0.5 — handoff `notes/codex_handoff_phase_0_5.txt`; review pending.
+### Phase 0.5 — Codex, `notes/codex_review_phase_0_5.txt` — CHANGES REQUESTED → addressed
+
+2 Medium findings: (1) container accepted `RUN_ENV=dev` and `finish` inserted before
+writing the file → partial persistence; fixed via an `APP_CONTAINER` guard rejecting
+`RUN_ENV=dev` + reordering `finish` to write-file-before-INSERT (verified
+in-container: rejects dev, and a failed run leaves 0 DB rows). (2) `.env.example`
+missing `RUN_LOGS_DIR`/`DOCKER_GID`/`UID_0-2`; documented. Codex approved the
+`$N::text::T` cast. Gate green (14 tests). A live-row re-confirmation is blocked by a
+missing June DB partition (dev-env, fleet-wide; see the Phase 0.5 entry).
 
 ---
 

@@ -34,6 +34,23 @@ impl Config {
         let run_env = opt("RUN_ENV", "dev");
         let logger = opt("LOGGER", "dev");
 
+        // Containerized runs must NOT use RUN_ENV=dev: dev resolves the run-log path
+        // to a relative `./<file>` under the root-owned /workspace, while the process
+        // runs as `svc` (gosu) — so the file write fails *after* the app has already
+        // touched shared DB state. The compose service sets APP_CONTAINER=1; reject
+        // the known-bad combination here, before any DB work. (Codex P0.5 finding 1.)
+        let in_container = matches!(
+            std::env::var("APP_CONTAINER").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        );
+        if is_disallowed_container_run_env(in_container, &run_env) {
+            return Err(AppError::Config(
+                "RUN_ENV=dev is not allowed in a container (run-log path would be a \
+                 non-writable relative ./ path); use staging or prod"
+                    .to_string(),
+            ));
+        }
+
         // Mirror Node buildSsl() mode mapping: disable | require | verify-ca/verify-full.
         //
         // INTENTIONAL DIVERGENCE (Codex finding 2): Node defaults a *missing*
@@ -84,6 +101,13 @@ impl Config {
     }
 }
 
+/// True when a containerized run requested the known-bad `RUN_ENV=dev` (whose
+/// relative run-log path isn't writable as `svc`). Pure so it's unit-testable
+/// without touching the process environment.
+fn is_disallowed_container_run_env(in_container: bool, run_env: &str) -> bool {
+    in_container && run_env == "dev"
+}
+
 fn req(key: &str) -> Result<String, AppError> {
     std::env::var(key)
         .ok()
@@ -113,5 +137,53 @@ fn parse_usize(key: &str, default: usize) -> Result<usize, AppError> {
         Some(v) => v
             .parse::<usize>()
             .map_err(|_| AppError::Config(format!("{key} is not a valid number: {v}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn container_rejects_dev_only() {
+        // The one disallowed combination: in a container with RUN_ENV=dev.
+        assert!(is_disallowed_container_run_env(true, "dev"));
+        // Allowed: staging/prod in a container; dev only on the native host.
+        assert!(!is_disallowed_container_run_env(true, "staging"));
+        assert!(!is_disallowed_container_run_env(true, "prod"));
+        assert!(!is_disallowed_container_run_env(false, "dev"));
+        assert!(!is_disallowed_container_run_env(false, "staging"));
+    }
+
+    fn cfg(run_env: &str) -> Config {
+        Config {
+            app_name: "siemens_rpp".to_string(),
+            run_env: run_env.to_string(),
+            logger: "dev".to_string(),
+            db: DbConfig::default(),
+            redis_host: "h".to_string(),
+            redis_port: 6379,
+            acqu_files_root: "/opt/resources/acqu_files".to_string(),
+        }
+    }
+
+    #[test]
+    fn run_log_path_dev_is_relative() {
+        assert_eq!(
+            cfg("dev").run_log_path("abc"),
+            "./siemens_rpp-log.dev.abc.json"
+        );
+    }
+
+    #[test]
+    fn run_log_path_staging_prod_use_run_logs_dir() {
+        assert_eq!(
+            cfg("staging").run_log_path("abc"),
+            "/opt/run-logs/siemens_rpp/siemens_rpp-log.dev.abc.json"
+        );
+        assert_eq!(
+            cfg("prod").run_log_path("abc"),
+            "/opt/run-logs/siemens_rpp/siemens_rpp-log.dev.abc.json"
+        );
     }
 }

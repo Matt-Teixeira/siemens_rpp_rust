@@ -39,6 +39,9 @@ services:
       RUN_USER: ${RUN_USER}
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: "${REDIS_PORT}"
+      # Marks a containerized run so the app rejects RUN_ENV=dev (whose relative
+      # run-log path isn't writable as svc). See Config::from_env. (Codex P0.5 #1)
+      APP_CONTAINER: "1"
     networks:
       - redis_net
       - pg_net

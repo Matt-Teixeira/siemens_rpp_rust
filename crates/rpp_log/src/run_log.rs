@@ -141,14 +141,19 @@ impl RunLog {
             })
     }
 
-    /// Persist the run: INSERT the row via the sink, then write the file. Returns
-    /// the persisted row for inspection/logging.
+    /// Persist the run: write the run-log file **first**, then INSERT the row via
+    /// the sink. Returns the persisted row for inspection/logging.
+    ///
+    /// File-before-DB ordering is deliberate (Codex P0.5 finding 1): a bad/unwritable
+    /// path then fails *before* we mutate shared `util.app_run_logs` state, instead
+    /// of leaving a DB row with no matching file on disk (the 83e68f31 smoke case).
+    /// It also leans toward Node's behavior of always producing the run-log file.
     pub async fn finish<S: RunLogSink>(&self, sink: &S, file_path: &str) -> Result<AppRunLogRow> {
         let row = self.to_row()?;
+        self.write_file(file_path).await?;
         sink.insert_app_run_log(&row)
             .await
             .map_err(|e| LogError::Sink(Box::new(e)))?;
-        self.write_file(file_path).await?;
         Ok(row)
     }
 }

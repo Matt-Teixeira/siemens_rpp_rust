@@ -1,0 +1,35 @@
+Codex review: Phase 0.5 container + live util.app_run_logs row
+Branch: phase-0-shared-crates
+Reviewed: 2026-06-01
+
+Verdict: Changes requested before merging Phase 0 + 0.5
+
+Findings
+
+1. Medium / runtime integrity: the container still accepts the known-bad RUN_ENV=dev path, and a failure leaves a DB row without the matching run-log file.
+
+   The handoff proves this happened once already: the app inserted row 83e68f31, then failed to write the file because RUN_ENV=dev resolves to a relative path under /workspace. The code still permits the same configuration. Config::run_log_path maps RUN_ENV=dev to ./<file> in crates/siemens_rpp/src/config.rs:79-80, and RunLog::finish inserts the util.app_run_logs row before attempting the file write in crates/rpp_log/src/run_log.rs:147-151. In the container, docker-compose.yaml:10-11 imports the operator .env wholesale, so any real .env that still has RUN_ENV=dev will reproduce the partial persistence.
+
+   Why this matters: the Phase 0.5 exit criterion is "row + disk file" from inside the container. Documentation in .env.example lowers the chance of the bad setting, but it does not prevent the app from mutating shared dev/prod state before failing. This is especially risky for cron-style batch work because an operator can see a nonzero exit and still have a misleading util.app_run_logs row.
+
+   Recommended fix: add a runtime guard for containerized runs before any DB work, e.g. set an IN_CONTAINER/APP_CONTAINER env var in docker-compose and reject RUN_ENV=dev during Config::from_env, or make the compose service override RUN_ENV to a safe value. Separately, consider changing RunLog::finish so the file is written before the DB insert, or make the file write best-effort on DB failure as already captured by Codex F7 in markdown/PHASE_LOG.md:193-199.
+
+2. Medium / deployability: .env.example does not document required compose/build variables.
+
+   docker-compose.yaml requires DOCKER_GID and UID_0/UID_1/UID_2 as Docker build args at lines 23-27, and RUN_LOGS_DIR as a volume spec at line 32. docker/Dockerfile then uses those args directly in groupadd/useradd at lines 47-50. But .env.example only documents RUN_USER under "Container runtime" at .env.example:33-34. A user following the contract by copying .env.example cannot build or run the compose service without already knowing the fleet-only variables from elsewhere.
+
+   Why this matters: Phase 0.5 is specifically the containerization phase. The compose file is not self-contained enough for a new host or reviewer to reproduce the smoke test from the documented env contract.
+
+   Recommended fix: add explicit placeholders/examples for DOCKER_GID, UID_0, UID_1, UID_2, and RUN_LOGS_DIR to .env.example, or provide safe Dockerfile defaults for non-fleet local builds while keeping production overrides.
+
+Notes
+
+- The $N::text::T INSERT cast approach in crates/rpp_db/src/app_run_log.rs is acceptable for this phase. It remains parameterized, matches the "send strings, let PG coerce" Node behavior, and resolves the tokio-postgres String-to-uuid bind problem against the verified live schema.
+- The Dockerfile shape is reasonable for the current goal: cargo-chef dependency layer, Debian runtime matching glibc, gosu privilege drop, no source bind mount.
+- The read-only ACQU_FILES_ROOT mount in docker-compose.yaml matches the plan and is the right default for parser input.
+- git diff --check passed.
+- I could not run cargo test in this host environment because cargo is not installed here.
+
+Approval status
+
+Changes requested. I would fix the RUN_ENV/dev guard before merge because it has already produced inconsistent shared-state smoke data. The missing .env.example variables should be fixed in the same pass so the Phase 0.5 container contract is complete.
